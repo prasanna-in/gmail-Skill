@@ -1,0 +1,25 @@
+[project]
+name = "gmail-skill"
+version = "0.1.0"
+description = "Claude Code skill for Gmail operations via Google APIs - read, search, send emails, and manage labels"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "google-api-python-client>=2.147.0",
+    "google-auth-httplib2>=0.2.0",
+    "google-auth-oauthlib>=1.2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "black>=24.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=68.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["skills*"]
+exclude = ["credentials*"]
