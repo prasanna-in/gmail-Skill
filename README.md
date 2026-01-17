@@ -1,6 +1,6 @@
 # Gmail Skill for Claude Code
 
-A Claude Code skill that provides direct Gmail API integration for reading, searching, sending emails, and managing labels. Built as a learning project to understand how Skills work in Claude Code.
+A Claude Code skill that provides direct Gmail API integration for reading, searching, sending emails, and managing labels.
 
 ## Features
 
@@ -25,7 +25,6 @@ A Claude Code skill that provides direct Gmail API integration for reading, sear
 8. [Project Structure](#project-structure)
 9. [How It Works](#how-it-works)
 10. [Troubleshooting](#troubleshooting)
-11. [Learning Resources](#learning-resources)
 
 ## Prerequisites
 
@@ -396,47 +395,6 @@ When you say "check my email", Claude automatically:
 For comprehensive troubleshooting, see:
 - [skills/gmail/references/troubleshooting.md](skills/gmail/references/troubleshooting.md)
 
-## Learning Resources
-
-### Understanding This Project
-
-This project demonstrates:
-1. **OAuth2 Flow:** Browser-based authentication with token refresh
-2. **Gmail API Integration:** Using Google's official Python client
-3. **Skill Architecture:** How Claude Code Skills work
-4. **Script Design:** Standalone executables with JSON output
-5. **Progressive Disclosure:** SKILL.md + supporting docs pattern
-
-### Code Walkthrough
-
-**For learning purposes, read in this order:**
-
-1. **skills/gmail/scripts/gmail_common.py** - Authentication and utilities
-2. **skills/gmail/scripts/gmail_auth.py** - OAuth2 setup flow
-3. **skills/gmail/scripts/gmail_read.py** - API usage example
-4. **skills/gmail/SKILL.md** - How Claude uses the skill
-
-Each file has extensive comments explaining:
-- Why the code is structured this way
-- How OAuth2 works
-- Gmail API concepts
-- Best practices
-
-### External Resources
-
-**Gmail API:**
-- Gmail API Overview: https://developers.google.com/gmail/api
-- Python Quickstart: https://developers.google.com/gmail/api/quickstart/python
-- API Reference: https://developers.google.com/gmail/api/reference/rest
-
-**Claude Code Skills:**
-- Skills Documentation: https://code.claude.com/docs/en/skills.md
-- Agent Skills Best Practices: https://docs.claude.com/en/docs/agents-and-tools/agent-skills/best-practices
-
-**OAuth 2.0:**
-- OAuth 2.0 Overview: https://developers.google.com/identity/protocols/oauth2
-- Desktop App Flow: https://developers.google.com/identity/protocols/oauth2/native-app
-
 ## Future Enhancements
 
 Ideas for extending this skill (marked as TODOs in code):
@@ -452,12 +410,12 @@ Ideas for extending this skill (marked as TODOs in code):
 
 ## Contributing
 
-This is a learning project! Feel free to:
-- Experiment with the code
+Contributions are welcome! Feel free to:
+- Report bugs and issues
 - Add new features
 - Improve error handling
 - Extend documentation
-- Share what you learned
+- Submit pull requests
 
 ## Security Notes
 
@@ -479,8 +437,6 @@ For issues or questions:
 3. Check Gmail API documentation
 
 ---
-
-**Built as a learning project to understand Claude Code Skills architecture.**
 
 Version: 0.2.0
 Last Updated: 2026-01-18
