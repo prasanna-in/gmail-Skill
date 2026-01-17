@@ -52,9 +52,11 @@ Example:
 import argparse
 import json
 import os
+import re
 import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -94,9 +96,63 @@ from gmail_rlm_helpers import (
     prepare_llm_batch
 )
 
+# Import cache module
+from gmail_rlm_cache import get_cache, init_cache, disable_cache
+
+# Import checkpoint module
+from gmail_rlm_checkpoint import (
+    checkpoint_parallel_map,
+    load_checkpoint_info,
+    clear_checkpoint,
+    RLMCheckpoint
+)
+
+# Import workflow creators
+from gmail_rlm_helpers import (
+    create_inbox_triage,
+    create_weekly_summary,
+    create_find_action_items,
+    create_sender_analysis
+)
+
 
 # OAuth scopes
 SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
+
+
+# =============================================================================
+# Custom Exceptions
+# =============================================================================
+
+class BudgetExceededError(Exception):
+    """Raised when session budget or call limit is exceeded."""
+    pass
+
+
+class RecursionDepthExceededError(Exception):
+    """Raised when max recursion depth is exceeded."""
+    pass
+
+
+class LowConfidenceError(Exception):
+    """Raised when LLM confidence is below threshold."""
+    pass
+
+
+# =============================================================================
+# Model Pricing and Defaults
+# =============================================================================
+
+# Model pricing per 1M tokens (as of Jan 2026)
+MODEL_PRICING = {
+    "claude-3-5-haiku-20241022": {"input": 1.00, "output": 5.00},
+    "claude-3-5-sonnet-20241022": {"input": 3.00, "output": 15.00},
+    "claude-3-opus-20240229": {"input": 15.00, "output": 75.00},
+}
+
+DEFAULT_MAX_BUDGET_USD = 5.00
+DEFAULT_MAX_CALLS = 100
+DEFAULT_MAX_DEPTH = 3
 
 # RLM preamble for sub-query framing
 RLM_PREAMBLE = """You are a sub-query processor in a Recursive Language Model (RLM) system.
@@ -131,6 +187,17 @@ class RLMSession:
     total_output_tokens: int = 0
     call_count: int = 0
     model: str = "claude-3-5-haiku-20241022"
+    # Budget and limits
+    max_budget_usd: float = DEFAULT_MAX_BUDGET_USD
+    max_calls: int = DEFAULT_MAX_CALLS
+    budget_exceeded: bool = False
+    # Recursion depth tracking
+    current_depth: int = 0
+    max_depth: int = DEFAULT_MAX_DEPTH
+    # Cache stats (populated by cache module)
+    cache_hits: int = 0
+    cache_misses: int = 0
+    cache_tokens_saved: int = 0
 
     def add_usage(self, input_tokens: int, output_tokens: int) -> None:
         """Accumulate token counts from an API call."""
@@ -138,6 +205,28 @@ class RLMSession:
         self.total_output_tokens += output_tokens
         self.call_count += 1
         self.updated_at = datetime.now().isoformat()
+
+    def calculate_cost(self) -> float:
+        """Calculate total cost based on model pricing."""
+        pricing = MODEL_PRICING.get(self.model, {"input": 3.00, "output": 15.00})
+        input_cost = (self.total_input_tokens / 1_000_000) * pricing["input"]
+        output_cost = (self.total_output_tokens / 1_000_000) * pricing["output"]
+        return input_cost + output_cost
+
+    def check_budget(self) -> None:
+        """Raise BudgetExceededError if limits exceeded."""
+        current_cost = self.calculate_cost()
+        if current_cost >= self.max_budget_usd:
+            self.budget_exceeded = True
+            raise BudgetExceededError(
+                f"Budget exceeded: ${current_cost:.4f} >= ${self.max_budget_usd:.2f} "
+                f"(input: {self.total_input_tokens}, output: {self.total_output_tokens})"
+            )
+        if self.call_count >= self.max_calls:
+            self.budget_exceeded = True
+            raise BudgetExceededError(
+                f"Call limit exceeded: {self.call_count} >= {self.max_calls}"
+            )
 
     def to_dict(self) -> dict:
         """Return session stats as a dictionary."""
@@ -149,7 +238,18 @@ class RLMSession:
             "total_output_tokens": self.total_output_tokens,
             "total_tokens": self.total_input_tokens + self.total_output_tokens,
             "call_count": self.call_count,
-            "model": self.model
+            "model": self.model,
+            "estimated_cost_usd": round(self.calculate_cost(), 4),
+            "max_budget_usd": self.max_budget_usd,
+            "max_calls": self.max_calls,
+            "budget_exceeded": self.budget_exceeded,
+            "current_depth": self.current_depth,
+            "max_depth": self.max_depth,
+            "cache": {
+                "hits": self.cache_hits,
+                "misses": self.cache_misses,
+                "tokens_saved": self.cache_tokens_saved
+            }
         }
 
 
@@ -165,11 +265,35 @@ def get_session() -> RLMSession:
     return _session
 
 
-def reset_session(model: str = None) -> RLMSession:
-    """Reset the session with optional model override."""
+def reset_session(
+    model: str = None,
+    max_budget_usd: float = None,
+    max_calls: int = None,
+    max_depth: int = None
+) -> RLMSession:
+    """Reset the session with optional overrides."""
     global _session
-    _session = RLMSession(model=model or _default_model)
+    _session = RLMSession(
+        model=model or _default_model,
+        max_budget_usd=max_budget_usd if max_budget_usd is not None else DEFAULT_MAX_BUDGET_USD,
+        max_calls=max_calls if max_calls is not None else DEFAULT_MAX_CALLS,
+        max_depth=max_depth if max_depth is not None else DEFAULT_MAX_DEPTH
+    )
     return _session
+
+
+@contextmanager
+def depth_context(session: RLMSession):
+    """Track recursion depth, raise if exceeded."""
+    if session.current_depth >= session.max_depth:
+        raise RecursionDepthExceededError(
+            f"Max recursion depth {session.max_depth} exceeded at depth {session.current_depth}"
+        )
+    session.current_depth += 1
+    try:
+        yield session.current_depth
+    finally:
+        session.current_depth -= 1
 
 
 def llm_query(
@@ -179,6 +303,7 @@ def llm_query(
     use_rlm_framing: bool = None,
     model: str = None,
     json_output: bool = False,
+    use_cache: bool = True,
     _skip_status: bool = False
 ) -> str:
     """
@@ -195,6 +320,7 @@ def llm_query(
                          (default: None, uses global _default_use_rlm_framing)
         model: Model to use (default: uses global _default_model)
         json_output: Request JSON response format (default: False)
+        use_cache: Use caching layer (default: True)
 
     Returns:
         LLM response string
@@ -211,6 +337,12 @@ def llm_query(
     if model is None:
         model = _default_model
 
+    # Get session for token tracking and budget/depth checks
+    session = get_session()
+
+    # Check budget before making API call
+    session.check_budget()
+
     # Build the full prompt with optional RLM framing
     parts = []
 
@@ -224,42 +356,62 @@ def llm_query(
 
     full_prompt = "\n".join(parts)
 
+    # Check cache first
+    cache = get_cache()
+    if use_cache and cache is not None:
+        cache_key = cache.get_key(prompt, context or "", model)
+        cached_result = cache.get(cache_key)
+        if cached_result is not None:
+            session.cache_hits += 1
+            if not _skip_status:
+                status_done("Cache hit")
+            return cached_result
+        session.cache_misses += 1
+
     try:
-        # Get session for token tracking
-        session = get_session()
+        # Track recursion depth
+        with depth_context(session):
+            # Initialize Anthropic client (uses ANTHROPIC_API_KEY env var)
+            client = Anthropic()
 
-        # Initialize Anthropic client (uses ANTHROPIC_API_KEY env var)
-        client = Anthropic()
+            # Build request parameters
+            request_params = {
+                "model": model,
+                "max_tokens": 4096,
+                "messages": [{"role": "user", "content": full_prompt}],
+            }
 
-        # Build request parameters
-        request_params = {
-            "model": model,
-            "max_tokens": 4096,
-            "messages": [{"role": "user", "content": full_prompt}],
-        }
+            # Add JSON output mode if requested
+            if json_output:
+                request_params["response_format"] = {"type": "json_object"}
 
-        # Add JSON output mode if requested
-        if json_output:
-            request_params["response_format"] = {"type": "json_object"}
+            # Make API call with timeout
+            if not _skip_status:
+                status_async("Querying LLM...")
+            response = client.messages.create(
+                **request_params,
+                timeout=float(timeout)
+            )
 
-        # Make API call with timeout
-        if not _skip_status:
-            status_async("Querying LLM...")
-        response = client.messages.create(
-            **request_params,
-            timeout=float(timeout)
-        )
+            # Track token usage
+            session.add_usage(
+                response.usage.input_tokens,
+                response.usage.output_tokens
+            )
 
-        # Track token usage
-        session.add_usage(
-            response.usage.input_tokens,
-            response.usage.output_tokens
-        )
+            result = response.content[0].text
 
-        if not _skip_status:
-            status_done("LLM query complete")
-        return response.content[0].text
+            # Store in cache
+            if use_cache and cache is not None:
+                tokens_used = response.usage.input_tokens + response.usage.output_tokens
+                cache.set(cache_key, result, tokens_used, model)
 
+            if not _skip_status:
+                status_done("LLM query complete")
+            return result
+
+    except (BudgetExceededError, RecursionDepthExceededError):
+        raise  # Re-raise control flow exceptions
     except Exception as e:
         error_str = str(e)
         if "ANTHROPIC_API_KEY" in error_str or "api_key" in error_str.lower():
@@ -355,6 +507,182 @@ def parallel_map(
     results = parallel_llm_query(prompts, max_workers=max_workers, use_rlm_framing=use_rlm_framing, model=model, json_output=json_output, _skip_status=True)
     status_done(f"Processed {len(chunks)} chunks")
     return results
+
+
+# =============================================================================
+# JSON Output Enforcement (Task 5)
+# =============================================================================
+
+# Common JSON schemas for structured output
+ACTION_ITEMS_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "task": {"type": "string"},
+            "deadline": {"type": "string"},
+            "sender": {"type": "string"},
+            "priority": {"enum": ["high", "medium", "low"]}
+        },
+        "required": ["task"]
+    }
+}
+
+EMAIL_CLASSIFICATION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "category": {"enum": ["urgent", "action_required", "fyi", "newsletter"]},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+    },
+    "required": ["category"]
+}
+
+
+def llm_query_json(
+    prompt: str,
+    context: str = None,
+    schema: dict = None,
+    max_retries: int = 2,
+    **kwargs
+) -> dict | list:
+    """
+    LLM query with guaranteed JSON output and optional schema validation.
+
+    Retries on parse errors, providing error feedback to improve results.
+
+    Args:
+        prompt: The task/question for the LLM
+        context: Optional context data
+        schema: Optional JSON schema for validation
+        max_retries: Number of retries on parse failure (default: 2)
+        **kwargs: Additional arguments passed to llm_query
+
+    Returns:
+        Parsed JSON (dict or list)
+
+    Raises:
+        ValueError: If JSON parsing fails after all retries
+
+    Example:
+        items = llm_query_json(
+            'Extract action items as JSON array',
+            context=email_text,
+            schema=ACTION_ITEMS_SCHEMA
+        )
+    """
+    try:
+        import jsonschema
+        has_jsonschema = True
+    except ImportError:
+        has_jsonschema = False
+
+    current_prompt = prompt
+
+    for attempt in range(max_retries + 1):
+        result = llm_query(current_prompt, context, json_output=True, **kwargs)
+
+        try:
+            # Parse JSON
+            parsed = json.loads(result)
+
+            # Validate against schema if provided
+            if schema and has_jsonschema:
+                jsonschema.validate(parsed, schema)
+
+            return parsed
+
+        except json.JSONDecodeError as e:
+            if attempt == max_retries:
+                raise ValueError(f"JSON parsing failed after {max_retries + 1} attempts: {e}")
+            # Retry with error feedback
+            current_prompt = f"{prompt}\n\nPrevious response was invalid JSON. Error: {e}. Please respond with valid JSON only."
+
+        except Exception as e:
+            # jsonschema.ValidationError or other
+            if attempt == max_retries:
+                raise ValueError(f"JSON validation failed after {max_retries + 1} attempts: {e}")
+            # Retry with schema feedback
+            current_prompt = f"{prompt}\n\nPrevious response failed validation: {e}. Please fix and respond with valid JSON."
+
+    return parsed  # Should not reach here
+
+
+# =============================================================================
+# Confidence Scoring (Task 7)
+# =============================================================================
+
+@dataclass
+class ConfidenceResult:
+    """Result with confidence score from LLM query."""
+    answer: str
+    confidence: float  # 0.0 to 1.0
+    reasoning: str     # Optional explanation of confidence level
+
+
+def llm_query_with_confidence(
+    prompt: str,
+    context: str = None,
+    min_confidence: float = 0.0,
+    **kwargs
+) -> ConfidenceResult:
+    """
+    LLM query that returns confidence score with answer.
+
+    The LLM is asked to provide a confidence level (0-100) and reasoning
+    along with its answer.
+
+    Args:
+        prompt: The task/question for the LLM
+        context: Optional context data
+        min_confidence: Minimum required confidence (0.0-1.0). Raises if below.
+        **kwargs: Additional arguments passed to llm_query
+
+    Returns:
+        ConfidenceResult with answer, confidence (0.0-1.0), and reasoning
+
+    Raises:
+        LowConfidenceError: If confidence is below min_confidence
+
+    Example:
+        result = llm_query_with_confidence(
+            'Is this email urgent?',
+            context=email_text,
+            min_confidence=0.7
+        )
+        if result.confidence >= 0.8:
+            mark_as_urgent(email)
+    """
+    enhanced_prompt = f"""{prompt}
+
+After your answer, provide on separate lines:
+CONFIDENCE: [0-100]
+REASONING: [brief explanation of confidence level]"""
+
+    result = llm_query(enhanced_prompt, context, **kwargs)
+
+    # Parse confidence from response
+    confidence = 0.5  # Default
+    reasoning = ""
+    answer = result
+
+    # Extract confidence
+    confidence_match = re.search(r'CONFIDENCE:\s*(\d+)', result, re.IGNORECASE)
+    if confidence_match:
+        confidence = int(confidence_match.group(1)) / 100
+        answer = result[:confidence_match.start()].strip()
+
+    # Extract reasoning
+    reasoning_match = re.search(r'REASONING:\s*(.+?)(?:\n|$)', result, re.IGNORECASE)
+    if reasoning_match:
+        reasoning = reasoning_match.group(1).strip()
+
+    # Check minimum confidence threshold
+    if confidence < min_confidence:
+        raise LowConfidenceError(
+            f"Confidence {confidence:.0%} below threshold {min_confidence:.0%}"
+        )
+
+    return ConfidenceResult(answer=answer, confidence=confidence, reasoning=reasoning)
 
 
 def FINAL(result: str):
@@ -559,6 +887,34 @@ def execute_rlm_code(
     _final_result = None
     _final_set = False
 
+    # Create workflow functions with injected dependencies
+    inbox_triage = create_inbox_triage(llm_query, parallel_map)
+    weekly_summary = create_weekly_summary(llm_query, parallel_map)
+    find_action_items = create_find_action_items(llm_query, llm_query_json)
+    sender_analysis = create_sender_analysis(llm_query, parallel_map)
+
+    # Create checkpoint-enabled parallel_map wrapper
+    def checkpoint_map(
+        func_prompt: str,
+        chunks: list,
+        context_fn=str,
+        checkpoint_path: str = None,
+        checkpoint_interval: int = 10,
+        **kwargs
+    ):
+        """parallel_map with checkpoint/resume support."""
+        return checkpoint_parallel_map(
+            func_prompt=func_prompt,
+            chunks=chunks,
+            context_fn=context_fn,
+            llm_query_fn=llm_query,
+            checkpoint_path=checkpoint_path,
+            checkpoint_interval=checkpoint_interval,
+            emails=emails,
+            session_state_fn=lambda: get_session().to_dict(),
+            **kwargs
+        )
+
     # Build execution environment
     exec_env = {
         # Data
@@ -573,6 +929,29 @@ def execute_rlm_code(
         'FINAL_VAR': FINAL_VAR,
         'RLM_PREAMBLE': RLM_PREAMBLE,
         'get_session': get_session,
+
+        # JSON and confidence functions
+        'llm_query_json': llm_query_json,
+        'llm_query_with_confidence': llm_query_with_confidence,
+        'ConfidenceResult': ConfidenceResult,
+
+        # Pre-built workflows
+        'inbox_triage': inbox_triage,
+        'weekly_summary': weekly_summary,
+        'find_action_items': find_action_items,
+        'sender_analysis': sender_analysis,
+
+        # Checkpoint support
+        'checkpoint_parallel_map': checkpoint_map,
+
+        # JSON schemas
+        'ACTION_ITEMS_SCHEMA': ACTION_ITEMS_SCHEMA,
+        'EMAIL_CLASSIFICATION_SCHEMA': EMAIL_CLASSIFICATION_SCHEMA,
+
+        # Exceptions (for catching)
+        'BudgetExceededError': BudgetExceededError,
+        'RecursionDepthExceededError': RecursionDepthExceededError,
+        'LowConfidenceError': LowConfidenceError,
 
         # Helper functions
         'chunk_by_size': chunk_by_size,
@@ -616,6 +995,7 @@ def execute_rlm_code(
         'round': round,
         'print': lambda *args, **kwargs: print(*args, file=sys.stderr, **kwargs),
         'json': json,
+        're': re,
     }
 
     # Store for FINAL_VAR access
@@ -653,27 +1033,46 @@ Built-in Variables:
   emails    - List of email dicts with keys: id, threadId, subject, from, to, date, snippet, body
   metadata  - Dict with: query, count, format
 
-Built-in Functions:
-  llm_query(prompt, context)     - Recursive Claude call (returns string)
-  parallel_llm_query(prompts, max_workers)  - Parallel LLM calls (3-5x faster)
-  parallel_map(prompt, chunks, context_fn)  - Apply prompt to chunks in parallel
-  chunk_by_size(emails, n)       - Split into n-sized chunks (returns list of lists)
-  chunk_by_sender(emails)        - Group by sender (returns dict)
-  chunk_by_date(emails, period)  - Group by day/week/month (returns dict)
-  filter_by_keyword(emails, kw)  - Filter by keyword (returns list)
-  FINAL(result)                  - Set output result (string)
-  FINAL_VAR(name)                - Set variable as output (JSON)
+Core Functions:
+  llm_query(prompt, context)           - Recursive Claude call (returns string)
+  llm_query_json(prompt, context, schema)  - LLM call with JSON output validation
+  llm_query_with_confidence(prompt, context, min_confidence)  - LLM call with confidence score
+  parallel_llm_query(prompts, max_workers) - Parallel LLM calls (3-5x faster)
+  parallel_map(prompt, chunks, context_fn) - Apply prompt to chunks in parallel
+  checkpoint_parallel_map(...)         - parallel_map with checkpoint/resume support
+
+Pre-built Workflows:
+  inbox_triage(emails)                 - Classify: urgent, action_required, fyi, newsletter
+  weekly_summary(emails)               - Executive summary with key themes
+  find_action_items(emails)            - Extract tasks with deadlines
+  sender_analysis(emails, top_n)       - Analyze top senders' communication patterns
+
+Helper Functions:
+  chunk_by_size(emails, n)             - Split into n-sized chunks (returns list of lists)
+  chunk_by_sender(emails)              - Group by sender (returns dict)
+  chunk_by_date(emails, period)        - Group by day/week/month (returns dict)
+  filter_by_keyword(emails, kw)        - Filter by keyword (returns list)
+  get_session()                        - Get session stats (tokens, cost, calls)
+  FINAL(result)                        - Set output result (string)
+  FINAL_VAR(name)                      - Set variable as output (JSON)
+
+Safety Controls:
+  --max-budget USD                     - Stop if cost exceeds budget (default: $5.00)
+  --max-calls N                        - Stop after N LLM calls (default: 100)
+  --max-depth N                        - Max recursion depth (default: 3)
+  --no-cache                           - Disable query caching
 
 Example:
+  # Basic analysis
   python gmail_rlm_repl.py --query "newer_than:7d" --max-results 100 --code "
-  # Group by sender and summarize top 3
-  by_sender = chunk_by_sender(emails)
-  top = sorted(by_sender.items(), key=lambda x: -len(x[1]))[:3]
-  summaries = []
-  for sender, msgs in top:
-      s = llm_query(f'Summarize emails from {sender}', str([m['snippet'] for m in msgs]))
-      summaries.append(f'{sender} ({len(msgs)}): {s}')
-  FINAL('\\n'.join(summaries))
+  result = inbox_triage(emails)
+  FINAL(json.dumps({k: len(v) for k, v in result.items()}))
+  "
+
+  # With budget control
+  python gmail_rlm_repl.py --query "is:unread" --max-budget 1.00 --code "
+  summary = weekly_summary(emails)
+  FINAL(summary)
   "
         """
     )
@@ -751,6 +1150,64 @@ Example:
         help="Model for LLM sub-queries (default: claude-3-5-haiku-20241022)"
     )
 
+    # Budget and safety controls
+    parser.add_argument(
+        "--max-budget",
+        type=float,
+        default=DEFAULT_MAX_BUDGET_USD,
+        help=f"Max USD budget for LLM calls (default: {DEFAULT_MAX_BUDGET_USD})"
+    )
+
+    parser.add_argument(
+        "--max-calls",
+        type=int,
+        default=DEFAULT_MAX_CALLS,
+        help=f"Max number of LLM calls (default: {DEFAULT_MAX_CALLS})"
+    )
+
+    parser.add_argument(
+        "--max-depth",
+        type=int,
+        default=DEFAULT_MAX_DEPTH,
+        help=f"Max recursion depth for LLM calls (default: {DEFAULT_MAX_DEPTH})"
+    )
+
+    # Cache control
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Disable LLM query caching"
+    )
+
+    parser.add_argument(
+        "--cache-dir",
+        type=str,
+        default=None,
+        help="Directory for cache files (default: system temp)"
+    )
+
+    parser.add_argument(
+        "--cache-ttl",
+        type=int,
+        default=24,
+        help="Cache TTL in hours (default: 24)"
+    )
+
+    # Checkpoint support
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default=None,
+        help="Checkpoint file path for resume support"
+    )
+
+    parser.add_argument(
+        "--checkpoint-interval",
+        type=int,
+        default=10,
+        help="Save checkpoint every N chunks (default: 10)"
+    )
+
     args = parser.parse_args()
 
     # Set global defaults based on CLI flags
@@ -759,8 +1216,19 @@ Example:
         _default_use_rlm_framing = False
     _default_model = args.model
 
-    # Initialize session with the specified model
-    reset_session(model=args.model)
+    # Initialize session with the specified model and limits
+    reset_session(
+        model=args.model,
+        max_budget_usd=args.max_budget,
+        max_calls=args.max_calls,
+        max_depth=args.max_depth
+    )
+
+    # Initialize cache (or disable it)
+    if args.no_cache:
+        disable_cache()
+    else:
+        init_cache(cache_dir=args.cache_dir, ttl_hours=args.cache_ttl)
 
     # Load code
     if args.code_file:

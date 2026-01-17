@@ -10,12 +10,21 @@ Educational Note:
 - RLM approach processes data in chunks to avoid context overflow
 - Grouping by sender/date enables focused analysis
 - These helpers abstract common patterns from the RLM paper
+
+Pre-built Workflows:
+- inbox_triage(emails) - Classify emails into categories
+- weekly_summary(emails) - Generate executive summary
+- find_action_items(emails) - Extract action items with deadlines
 """
 
 from collections import defaultdict
 from datetime import datetime, timedelta
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, TYPE_CHECKING
 import re
+
+# Type hints for functions imported at runtime from gmail_rlm_repl
+if TYPE_CHECKING:
+    pass  # Forward references handled by string annotations
 
 
 def chunk_by_size(emails: list[dict], chunk_size: int = 20) -> list[list[dict]]:
@@ -447,3 +456,266 @@ def prepare_llm_batch(
         prompts.append((prompt_template, context))
 
     return prompts
+
+
+# =============================================================================
+# Pre-built Workflows (Task 3)
+# =============================================================================
+#
+# These workflow functions are designed to be injected with llm_query and
+# parallel_map functions from the gmail_rlm_repl module. They are called
+# through the execution context where these dependencies are available.
+#
+# The workflow functions below are factory functions that create closures
+# with the required dependencies.
+
+def create_inbox_triage(llm_query_fn: Callable, parallel_map_fn: Callable):
+    """
+    Create inbox_triage function with injected dependencies.
+
+    Args:
+        llm_query_fn: The llm_query function
+        parallel_map_fn: The parallel_map function
+
+    Returns:
+        inbox_triage function
+    """
+    def inbox_triage(emails: list[dict]) -> dict[str, list[dict]]:
+        """
+        Classify emails into categories using LLM.
+
+        Categories: urgent, action_required, fyi, newsletter
+
+        Args:
+            emails: List of email dictionaries
+
+        Returns:
+            Dict mapping category to list of emails
+
+        Example:
+            result = inbox_triage(emails)
+            print(f"Found {len(result.get('urgent', []))} urgent emails")
+        """
+        if not emails:
+            return {"urgent": [], "action_required": [], "fyi": [], "newsletter": []}
+
+        # Process each email individually for classification
+        results = parallel_map_fn(
+            func_prompt="Classify this email into exactly one category: urgent, action_required, fyi, or newsletter. Respond with ONLY the category name, nothing else.",
+            chunks=[[e] for e in emails],
+            context_fn=lambda chunk: extract_email_summary(chunk[0])
+        )
+
+        # Group by classification
+        categories = defaultdict(list)
+        valid_categories = {"urgent", "action_required", "fyi", "newsletter"}
+
+        for email, category in zip(emails, results):
+            cat = category.strip().lower().replace(" ", "_")
+            # Normalize common variations
+            if cat in valid_categories:
+                categories[cat].append(email)
+            elif "urgent" in cat:
+                categories["urgent"].append(email)
+            elif "action" in cat:
+                categories["action_required"].append(email)
+            elif "newsletter" in cat or "news" in cat:
+                categories["newsletter"].append(email)
+            else:
+                categories["fyi"].append(email)
+
+        return dict(categories)
+
+    return inbox_triage
+
+
+def create_weekly_summary(llm_query_fn: Callable, parallel_map_fn: Callable):
+    """
+    Create weekly_summary function with injected dependencies.
+
+    Args:
+        llm_query_fn: The llm_query function
+        parallel_map_fn: The parallel_map function
+
+    Returns:
+        weekly_summary function
+    """
+    def weekly_summary(emails: list[dict]) -> str:
+        """
+        Generate an executive summary of emails.
+
+        Processes emails by day, summarizes each day, then combines
+        into an overall executive brief.
+
+        Args:
+            emails: List of email dictionaries
+
+        Returns:
+            Executive summary string
+
+        Example:
+            summary = weekly_summary(emails)
+            print(summary)
+        """
+        if not emails:
+            return "No emails to summarize."
+
+        # Group by day
+        by_day = chunk_by_date(emails, period='day')
+
+        if not by_day:
+            return "No emails with valid dates to summarize."
+
+        # Summarize each day in parallel
+        sorted_days = sorted(by_day.keys())
+        day_chunks = [by_day[day] for day in sorted_days]
+
+        daily_summaries = parallel_map_fn(
+            func_prompt="Summarize the key points from these emails in 2-3 bullet points. Focus on important topics, decisions, and requests.",
+            chunks=day_chunks,
+            context_fn=batch_extract_summaries
+        )
+
+        # Combine daily summaries with dates
+        combined = []
+        for day, summary in zip(sorted_days, daily_summaries):
+            combined.append(f"**{day}**:\n{summary}")
+
+        daily_context = "\n\n".join(combined)
+
+        # Generate executive brief
+        final_summary = llm_query_fn(
+            "Combine these daily email summaries into a concise executive brief. "
+            "Include: 1) Key themes across the week, 2) Important action items, "
+            "3) Notable updates or decisions. Keep it under 300 words.",
+            context=daily_context
+        )
+
+        return final_summary
+
+    return weekly_summary
+
+
+def create_find_action_items(llm_query_fn: Callable, llm_query_json_fn: Callable = None):
+    """
+    Create find_action_items function with injected dependencies.
+
+    Args:
+        llm_query_fn: The llm_query function
+        llm_query_json_fn: The llm_query_json function (optional, falls back to llm_query)
+
+    Returns:
+        find_action_items function
+    """
+    def find_action_items(emails: list[dict]) -> list[dict]:
+        """
+        Extract action items from emails with deadlines.
+
+        Args:
+            emails: List of email dictionaries
+
+        Returns:
+            List of action item dicts with: task, deadline, sender, priority
+
+        Example:
+            items = find_action_items(emails)
+            for item in items:
+                print(f"[{item['priority']}] {item['task']} - due: {item.get('deadline', 'N/A')}")
+        """
+        if not emails:
+            return []
+
+        context = batch_extract_summaries(emails)
+
+        prompt = """Extract all action items from these emails. For each action item, provide:
+- task: Description of what needs to be done
+- deadline: Due date if mentioned (or "none" if not specified)
+- sender: Who requested this action
+- priority: high, medium, or low based on urgency
+
+Respond with a JSON array of objects. Example:
+[{"task": "Review proposal", "deadline": "Friday", "sender": "boss@company.com", "priority": "high"}]
+
+If no action items found, respond with: []"""
+
+        if llm_query_json_fn:
+            try:
+                result = llm_query_json_fn(prompt, context=context)
+                if isinstance(result, list):
+                    return result
+            except Exception:
+                pass  # Fall back to regular llm_query
+
+        # Fallback: parse JSON from regular response
+        import json
+        result = llm_query_fn(prompt, context=context, json_output=True)
+        try:
+            parsed = json.loads(result)
+            if isinstance(parsed, list):
+                return parsed
+            return []
+        except json.JSONDecodeError:
+            return []
+
+    return find_action_items
+
+
+def create_sender_analysis(llm_query_fn: Callable, parallel_map_fn: Callable):
+    """
+    Create sender_analysis function with injected dependencies.
+
+    Args:
+        llm_query_fn: The llm_query function
+        parallel_map_fn: The parallel_map function
+
+    Returns:
+        sender_analysis function
+    """
+    def sender_analysis(emails: list[dict], top_n: int = 5) -> dict[str, dict]:
+        """
+        Analyze communication patterns for top senders.
+
+        Args:
+            emails: List of email dictionaries
+            top_n: Number of top senders to analyze (default: 5)
+
+        Returns:
+            Dict mapping sender to analysis dict with: count, summary, tone
+
+        Example:
+            analysis = sender_analysis(emails, top_n=3)
+            for sender, info in analysis.items():
+                print(f"{sender}: {info['count']} emails - {info['tone']}")
+        """
+        if not emails:
+            return {}
+
+        # Get top senders
+        by_sender = chunk_by_sender(emails)
+        top_senders = sorted(by_sender.items(), key=lambda x: -len(x[1]))[:top_n]
+
+        if not top_senders:
+            return {}
+
+        # Analyze each sender in parallel
+        sender_names = [s[0] for s in top_senders]
+        sender_emails = [s[1] for s in top_senders]
+
+        analyses = parallel_map_fn(
+            func_prompt="Analyze these emails from a single sender. Provide: 1) Main topics they discuss, 2) Communication tone (formal/informal/urgent), 3) Key requests or updates. Be concise.",
+            chunks=sender_emails,
+            context_fn=batch_extract_summaries
+        )
+
+        # Build result
+        result = {}
+        for sender, sender_msgs, analysis in zip(sender_names, sender_emails, analyses):
+            result[sender] = {
+                "count": len(sender_msgs),
+                "summary": analysis,
+                "tone": "formal" if "formal" in analysis.lower() else "informal"
+            }
+
+        return result
+
+    return sender_analysis
