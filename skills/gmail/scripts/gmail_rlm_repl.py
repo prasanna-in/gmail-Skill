@@ -115,7 +115,7 @@ _final_set = False
 _default_use_rlm_framing = True
 
 # Global default model for sub-queries
-_default_model = "claude-sonnet-4-20250514"
+_default_model = "claude-3-5-haiku-20241022"
 
 
 @dataclass
@@ -127,7 +127,7 @@ class RLMSession:
     total_input_tokens: int = 0
     total_output_tokens: int = 0
     call_count: int = 0
-    model: str = "claude-sonnet-4-20250514"
+    model: str = "claude-3-5-haiku-20241022"
 
     def add_usage(self, input_tokens: int, output_tokens: int) -> None:
         """Accumulate token counts from an API call."""
@@ -726,8 +726,8 @@ Example:
     parser.add_argument(
         "--model",
         type=str,
-        default="claude-sonnet-4-20250514",
-        help="Model for LLM sub-queries (default: claude-sonnet-4-20250514)"
+        default="claude-3-5-haiku-20241022",
+        help="Model for LLM sub-queries (default: claude-3-5-haiku-20241022)"
     )
 
     args = parser.parse_args()

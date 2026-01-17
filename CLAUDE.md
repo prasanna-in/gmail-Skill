@@ -98,7 +98,7 @@ When writing `--code` for `gmail_rlm_repl.py`:
 - `filter_by_keyword/sender(emails, pattern)` - Filtering functions
 - `FINAL(result)` / `FINAL_VAR(var)` - Output final result
 
-**CLI options:** `--model` selects LLM model (default: claude-sonnet-4-20250514), `--json-output` includes session stats in output.
+**CLI options:** `--model` selects LLM model (default: claude-3-5-haiku-20241022), `--json-output` includes session stats in output.
 
 ## Credentials
 
