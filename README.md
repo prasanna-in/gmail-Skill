@@ -35,7 +35,7 @@ A Claude Code skill that provides direct Gmail API integration for reading, sear
 
 1. **Clone or download this repository:**
    ```bash
-   cd /Users/pk/work/gmail_skill
+   cd /Users/**/work/gmail_skill
    ```
 
 2. **Install Python dependencies:**
@@ -102,12 +102,12 @@ Before using the skill, you must create OAuth2 credentials in Google Cloud Conso
 6. **Place Credentials File:**
    ```bash
    # Move downloaded credentials file to the credentials directory
-   mv ~/Downloads/client_secret_*.json /Users/pk/work/gmail_skill/credentials/credentials.json
+   mv ~/Downloads/client_secret_*.json /Users/**/work/gmail_skill/credentials/credentials.json
    ```
 
    Or if it's already named credentials.json:
    ```bash
-   mv ~/Downloads/credentials.json /Users/pk/work/gmail_skill/credentials/credentials.json
+   mv ~/Downloads/credentials.json /Users/**/work/gmail_skill/credentials/credentials.json
    ```
 
 ## Authentication
@@ -115,7 +115,7 @@ Before using the skill, you must create OAuth2 credentials in Google Cloud Conso
 After placing the credentials file, run the one-time authentication:
 
 ```bash
-python /Users/pk/work/gmail_skill/skills/gmail/scripts/gmail_auth.py
+python /Users/**/work/gmail_skill/skills/gmail/scripts/gmail_auth.py
 ```
 
 **What happens:**
@@ -136,7 +136,7 @@ python /Users/pk/work/gmail_skill/skills/gmail/scripts/gmail_auth.py
   "message": "Authentication successful",
   "email": "your.email@gmail.com",
   "scopes": ["https://www.googleapis.com/auth/gmail.modify"],
-  "token_file": "/Users/pk/work/gmail_skill/credentials/token.json"
+  "token_file": "/Users/**/work/gmail_skill/credentials/token.json"
 }
 ```
 
@@ -150,7 +150,7 @@ Once authenticated, you can use this skill with Claude Code in two ways:
 
 ```bash
 # Start Claude Code with this plugin
-cc --plugin-dir /Users/pk/work/gmail_skill
+cc --plugin-dir /Users/**/work/gmail_skill
 
 # Then ask Claude:
 # "Check my unread emails"
@@ -162,7 +162,7 @@ cc --plugin-dir /Users/pk/work/gmail_skill
 
 Copy to Claude Code plugins directory (when supported):
 ```bash
-cp -r /Users/pk/work/gmail_skill ~/.claude/plugins/gmail-skill
+cp -r /Users/**/work/gmail_skill ~/.claude/plugins/gmail-skill
 ```
 
 ## Usage Examples
