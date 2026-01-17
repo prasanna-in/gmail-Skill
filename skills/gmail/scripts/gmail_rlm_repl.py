@@ -91,12 +91,32 @@ from gmail_rlm_helpers import (
 # OAuth scopes
 SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
 
+# RLM preamble for sub-query framing
+RLM_PREAMBLE = """You are a sub-query processor in a Recursive Language Model (RLM) system.
+
+Your role:
+- You are one of potentially many parallel sub-queries analyzing a subset of data
+- Your output will be aggregated with other sub-query results
+- Be concise and focused - avoid preambles, summaries of what you'll do, or sign-offs
+- Output structured data when possible (bullet points, key: value pairs)
+- If the task asks for a specific format, follow it exactly
+
+"""
+
 # Global to store final result
 _final_result = None
 _final_set = False
 
+# Global default for RLM framing (can be disabled via CLI)
+_default_use_rlm_framing = True
 
-def llm_query(prompt: str, context: str = None, timeout: int = 120) -> str:
+
+def llm_query(
+    prompt: str,
+    context: str = None,
+    timeout: int = 120,
+    use_rlm_framing: bool = None
+) -> str:
     """
     Invoke Claude recursively via CLI subprocess.
 
@@ -107,6 +127,8 @@ def llm_query(prompt: str, context: str = None, timeout: int = 120) -> str:
         prompt: The task/question for the LLM
         context: Optional context data (e.g., email contents)
         timeout: Timeout in seconds (default: 120)
+        use_rlm_framing: Include RLM preamble for concise, aggregation-ready output
+                         (default: None, uses global _default_use_rlm_framing)
 
     Returns:
         LLM response string
@@ -117,11 +139,22 @@ def llm_query(prompt: str, context: str = None, timeout: int = 120) -> str:
             context=str([e['snippet'] for e in emails[:10]])
         )
     """
-    # Build the full prompt
+    # Use global default if not explicitly set
+    if use_rlm_framing is None:
+        use_rlm_framing = _default_use_rlm_framing
+
+    # Build the full prompt with optional RLM framing
+    parts = []
+
+    if use_rlm_framing:
+        parts.append(RLM_PREAMBLE)
+
     if context:
-        full_prompt = f"Context:\n{context}\n\nTask:\n{prompt}"
-    else:
-        full_prompt = prompt
+        parts.append(f"Data to analyze:\n{context}\n")
+
+    parts.append(f"Task: {prompt}")
+
+    full_prompt = "\n".join(parts)
 
     try:
         # Call Claude CLI in print mode (no interactive features)
@@ -149,7 +182,8 @@ def llm_query(prompt: str, context: str = None, timeout: int = 120) -> str:
 def parallel_llm_query(
     prompts: list[tuple[str, str]],
     max_workers: int = 5,
-    timeout: int = 120
+    timeout: int = 120,
+    use_rlm_framing: bool = None
 ) -> list[str]:
     """
     Execute multiple LLM queries in parallel.
@@ -158,6 +192,8 @@ def parallel_llm_query(
         prompts: List of (prompt, context) tuples
         max_workers: Max concurrent workers (default: 5)
         timeout: Per-query timeout in seconds
+        use_rlm_framing: Include RLM preamble for concise, aggregation-ready output
+                         (default: None, uses global _default_use_rlm_framing)
 
     Returns:
         List of results in same order as prompts
@@ -165,7 +201,7 @@ def parallel_llm_query(
     results = [None] * len(prompts)
 
     def execute_query(index, prompt, context):
-        return index, llm_query(prompt, context, timeout)
+        return index, llm_query(prompt, context, timeout, use_rlm_framing)
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
@@ -184,7 +220,8 @@ def parallel_map(
     func_prompt: str,
     chunks: list,
     context_fn: Callable = str,
-    max_workers: int = 5
+    max_workers: int = 5,
+    use_rlm_framing: bool = None
 ) -> list[str]:
     """
     Apply the same LLM prompt to multiple chunks in parallel.
@@ -194,6 +231,8 @@ def parallel_map(
         chunks: List of data chunks
         context_fn: Function to convert chunk to context string
         max_workers: Max concurrent workers
+        use_rlm_framing: Include RLM preamble for concise, aggregation-ready output
+                         (default: None, uses global _default_use_rlm_framing)
 
     Returns:
         List of results
@@ -207,7 +246,7 @@ def parallel_map(
         )
     """
     prompts = [(func_prompt, context_fn(chunk)) for chunk in chunks]
-    return parallel_llm_query(prompts, max_workers=max_workers)
+    return parallel_llm_query(prompts, max_workers=max_workers, use_rlm_framing=use_rlm_framing)
 
 
 def FINAL(result: str):
@@ -421,6 +460,7 @@ def execute_rlm_code(
         'parallel_map': parallel_map,
         'FINAL': FINAL,
         'FINAL_VAR': FINAL_VAR,
+        'RLM_PREAMBLE': RLM_PREAMBLE,
 
         # Helper functions
         'chunk_by_size': chunk_by_size,
@@ -585,7 +625,18 @@ Example:
         help="Max parallel workers for parallel_* functions (default: 5)"
     )
 
+    parser.add_argument(
+        "--no-rlm-framing",
+        action="store_true",
+        help="Disable RLM preamble in sub-queries (for debugging)"
+    )
+
     args = parser.parse_args()
+
+    # Set global RLM framing default based on CLI flag
+    global _default_use_rlm_framing
+    if args.no_rlm_framing:
+        _default_use_rlm_framing = False
 
     # Load code
     if args.code_file:
