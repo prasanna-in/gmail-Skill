@@ -420,3 +420,30 @@ def deduplicate_emails(emails: list[dict]) -> list[dict]:
             result.append(email)
 
     return result
+
+
+def prepare_llm_batch(
+    chunks: list[list[dict]],
+    prompt_template: str,
+    context_fields: list[str] = None
+) -> list[tuple[str, str]]:
+    """
+    Prepare batch of (prompt, context) tuples for parallel_llm_query.
+
+    Args:
+        chunks: List of email chunks
+        prompt_template: Prompt to use for each chunk
+        context_fields: Email fields to include in context (default: snippet, subject)
+
+    Returns:
+        List of (prompt, context) tuples ready for parallel_llm_query
+    """
+    if context_fields is None:
+        context_fields = ['snippet', 'subject']
+
+    prompts = []
+    for chunk in chunks:
+        context = str([{f: e.get(f, '') for f in context_fields} for e in chunk])
+        prompts.append((prompt_template, context))
+
+    return prompts

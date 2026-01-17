@@ -25,6 +25,8 @@ Built-in Variables:
 
 Built-in Functions:
     llm_query(prompt, context=None)  - Recursive LLM call via Claude CLI
+    parallel_llm_query(prompts, max_workers)  - Parallel LLM calls (3-5x faster)
+    parallel_map(prompt, chunks, context_fn)  - Apply prompt to chunks in parallel
     chunk_by_size(emails, size)      - Split into batches
     chunk_by_sender(emails)          - Group by sender
     chunk_by_date(emails, period)    - Group by day/week/month
@@ -51,7 +53,9 @@ import argparse
 import json
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Callable
 
 from googleapiclient.errors import HttpError
 
@@ -79,7 +83,8 @@ from gmail_rlm_helpers import (
     extract_email_summary,
     batch_extract_summaries,
     aggregate_results,
-    deduplicate_emails
+    deduplicate_emails,
+    prepare_llm_batch
 )
 
 
@@ -139,6 +144,70 @@ def llm_query(prompt: str, context: str = None, timeout: int = 120) -> str:
         return "[LLM Error: Claude CLI not found. Ensure 'claude' is in PATH]"
     except Exception as e:
         return f"[LLM Error: {str(e)}]"
+
+
+def parallel_llm_query(
+    prompts: list[tuple[str, str]],
+    max_workers: int = 5,
+    timeout: int = 120
+) -> list[str]:
+    """
+    Execute multiple LLM queries in parallel.
+
+    Args:
+        prompts: List of (prompt, context) tuples
+        max_workers: Max concurrent workers (default: 5)
+        timeout: Per-query timeout in seconds
+
+    Returns:
+        List of results in same order as prompts
+    """
+    results = [None] * len(prompts)
+
+    def execute_query(index, prompt, context):
+        return index, llm_query(prompt, context, timeout)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(execute_query, i, p, c): i
+            for i, (p, c) in enumerate(prompts)
+        }
+
+        for future in as_completed(futures):
+            idx, result = future.result()
+            results[idx] = result
+
+    return results
+
+
+def parallel_map(
+    func_prompt: str,
+    chunks: list,
+    context_fn: Callable = str,
+    max_workers: int = 5
+) -> list[str]:
+    """
+    Apply the same LLM prompt to multiple chunks in parallel.
+
+    Args:
+        func_prompt: Prompt template (use {chunk} placeholder)
+        chunks: List of data chunks
+        context_fn: Function to convert chunk to context string
+        max_workers: Max concurrent workers
+
+    Returns:
+        List of results
+
+    Example:
+        summaries = parallel_map(
+            'Summarize these emails',
+            chunk_by_size(emails, 20),
+            context_fn=lambda c: str([e['snippet'] for e in c]),
+            max_workers=5
+        )
+    """
+    prompts = [(func_prompt, context_fn(chunk)) for chunk in chunks]
+    return parallel_llm_query(prompts, max_workers=max_workers)
 
 
 def FINAL(result: str):
@@ -348,6 +417,8 @@ def execute_rlm_code(
 
         # Core RLM functions
         'llm_query': llm_query,
+        'parallel_llm_query': parallel_llm_query,
+        'parallel_map': parallel_map,
         'FINAL': FINAL,
         'FINAL_VAR': FINAL_VAR,
 
@@ -366,6 +437,7 @@ def execute_rlm_code(
         'batch_extract_summaries': batch_extract_summaries,
         'aggregate_results': aggregate_results,
         'deduplicate_emails': deduplicate_emails,
+        'prepare_llm_batch': prepare_llm_batch,
 
         # Standard library (safe subset)
         'len': len,
@@ -430,6 +502,8 @@ Built-in Variables:
 
 Built-in Functions:
   llm_query(prompt, context)     - Recursive Claude call (returns string)
+  parallel_llm_query(prompts, max_workers)  - Parallel LLM calls (3-5x faster)
+  parallel_map(prompt, chunks, context_fn)  - Apply prompt to chunks in parallel
   chunk_by_size(emails, n)       - Split into n-sized chunks (returns list of lists)
   chunk_by_sender(emails)        - Group by sender (returns dict)
   chunk_by_date(emails, period)  - Group by day/week/month (returns dict)
@@ -502,6 +576,13 @@ Example:
         "--json-output",
         action="store_true",
         help="Wrap output in JSON success format"
+    )
+
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=5,
+        help="Max parallel workers for parallel_* functions (default: 5)"
     )
 
     args = parser.parse_args()

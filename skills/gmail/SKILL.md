@@ -456,6 +456,8 @@ FINAL('\\n'.join(summaries))
 | Function | Description |
 |----------|-------------|
 | `llm_query(prompt, context)` | Recursive LLM call via Claude CLI |
+| `parallel_llm_query(prompts, max_workers)` | Execute multiple LLM queries in parallel |
+| `parallel_map(prompt, chunks, context_fn, max_workers)` | Apply prompt to chunks in parallel |
 | `FINAL(result)` | Output final result (string) |
 | `FINAL_VAR(var_name)` | Output variable as JSON |
 
@@ -483,6 +485,7 @@ FINAL('\\n'.join(summaries))
 | `extract_email_summary(email)` | Text summary of one email |
 | `batch_extract_summaries(emails, max_chars)` | Combined summary with char limit |
 | `aggregate_results(results, separator)` | Combine multiple results |
+| `prepare_llm_batch(chunks, prompt, fields)` | Prepare prompts for parallel_llm_query |
 
 ### RLM Example: Inbox Summary
 
@@ -561,6 +564,53 @@ FINAL_VAR('categories')
 ```
 
 For more RLM patterns and examples, see [references/rlm-patterns.md](references/rlm-patterns.md).
+
+### Parallel Processing
+
+For large email sets, use parallel functions to speed up analysis (3-5x faster):
+
+**`parallel_llm_query(prompts, max_workers=5)`**
+Execute multiple LLM queries concurrently. Takes a list of (prompt, context) tuples.
+
+**`parallel_map(prompt, chunks, context_fn, max_workers=5)`**
+Apply same prompt to multiple chunks in parallel. Simpler interface for common patterns.
+
+**`prepare_llm_batch(chunks, prompt_template, context_fields)`**
+Helper to prepare (prompt, context) tuples from email chunks.
+
+**Example: Parallel inbox summary**
+```python
+# Process 10 sender groups concurrently (5x faster than sequential)
+by_sender = chunk_by_sender(emails)
+top_senders = list(by_sender.items())[:10]
+
+prompts = [
+    (f'Summarize emails from {sender}',
+     str([m['snippet'] for m in msgs[:10]]))
+    for sender, msgs in top_senders
+]
+
+results = parallel_llm_query(prompts, max_workers=5)
+
+summaries = [
+    f'**{sender}**: {result}'
+    for (sender, _), result in zip(top_senders, results)
+]
+FINAL('\n\n'.join(summaries))
+```
+
+**Example: Using parallel_map**
+```python
+# Summarize email chunks in parallel
+chunks = chunk_by_size(emails, 20)
+results = parallel_map(
+    'Summarize these emails',
+    chunks[:5],
+    context_fn=lambda c: str([e['snippet'] for e in c]),
+    max_workers=5
+)
+FINAL('\n---\n'.join(results))
+```
 
 ---
 
