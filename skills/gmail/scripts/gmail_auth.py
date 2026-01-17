@@ -28,7 +28,9 @@ from gmail_common import (
     TOKEN_FILE,
     format_error,
     format_success,
-    log_verbose
+    log_verbose,
+    status_start,
+    status_done
 )
 
 
@@ -84,6 +86,7 @@ def authenticate(scopes: list[str], verbose: bool = False) -> dict:
         scopes
     )
 
+    status_start("Opening browser for authentication...")
     log_verbose("Starting OAuth2 consent flow...", verbose)
     log_verbose("Browser will open for authentication", verbose)
 
@@ -97,6 +100,7 @@ def authenticate(scopes: list[str], verbose: bool = False) -> dict:
     # 6. Server exchanges code for tokens
     creds = flow.run_local_server(port=0)
 
+    status_done("Authentication complete")
     log_verbose("Authentication successful", verbose)
     log_verbose("Saving tokens for future use...", verbose)
 

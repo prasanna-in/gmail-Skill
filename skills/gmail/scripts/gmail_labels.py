@@ -40,7 +40,9 @@ from gmail_common import (
     get_gmail_service,
     format_error,
     format_success,
-    log_verbose
+    log_verbose,
+    status_start,
+    status_done
 )
 
 
@@ -61,6 +63,7 @@ def list_labels(verbose: bool = False) -> dict:
     Raises:
         Exception: If API call fails
     """
+    status_start("Fetching labels...")
     log_verbose("Fetching labels...", verbose)
 
     service = get_gmail_service(SCOPES)
@@ -69,6 +72,7 @@ def list_labels(verbose: bool = False) -> dict:
         results = service.users().labels().list(userId='me').execute()
         labels = results.get('labels', [])
 
+        status_done(f"Found {len(labels)} labels")
         log_verbose(f"Found {len(labels)} labels", verbose)
 
         # Separate system and user labels
@@ -125,6 +129,7 @@ def create_label(name: str, verbose: bool = False) -> dict:
     Raises:
         Exception: If API call fails
     """
+    status_start("Creating label...")
     log_verbose(f"Creating label: {name}", verbose)
 
     service = get_gmail_service(SCOPES)
@@ -142,6 +147,7 @@ def create_label(name: str, verbose: bool = False) -> dict:
             body=label_object
         ).execute()
 
+        status_done("Label created")
         log_verbose(f"Label created with ID: {created_label['id']}", verbose)
 
         return {
@@ -183,6 +189,7 @@ def apply_label(
     Raises:
         Exception: If label not found or API call fails
     """
+    status_start(f"Applying label to {len(message_ids)} messages...")
     log_verbose(f"Applying label '{label_name}' to {len(message_ids)} message(s)", verbose)
 
     service = get_gmail_service(SCOPES)
@@ -215,6 +222,7 @@ def apply_label(
 
             successful += 1
 
+        status_done("Label applied")
         log_verbose(f"Successfully labeled {successful} message(s)", verbose)
 
         return {
@@ -253,6 +261,7 @@ def remove_label(
     Raises:
         Exception: If label not found or API call fails
     """
+    status_start(f"Removing label from {len(message_ids)} messages...")
     log_verbose(f"Removing label '{label_name}' from {len(message_ids)} message(s)", verbose)
 
     service = get_gmail_service(SCOPES)
@@ -285,6 +294,7 @@ def remove_label(
 
             successful += 1
 
+        status_done("Label removed")
         log_verbose(f"Successfully removed label from {successful} message(s)", verbose)
 
         return {

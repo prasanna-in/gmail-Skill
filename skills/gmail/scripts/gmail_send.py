@@ -39,7 +39,9 @@ from gmail_common import (
     validate_email,
     format_error,
     format_success,
-    log_verbose
+    log_verbose,
+    status_start,
+    status_done
 )
 
 
@@ -112,6 +114,7 @@ def send_email(
 
     try:
         # Send the message
+        status_start("Sending email...")
         log_verbose("Sending email via Gmail API...", verbose)
 
         message_body = {'raw': raw_message}
@@ -123,6 +126,7 @@ def send_email(
         message_id = sent_message.get('id')
         thread_id = sent_message.get('threadId')
 
+        status_done("Email sent")
         log_verbose(f"Email sent successfully! Message ID: {message_id}", verbose)
 
         return {

@@ -292,3 +292,18 @@ def log_verbose(message: str, verbose: bool = False):
     """
     if verbose:
         print(f"[VERBOSE] {message}", file=sys.stderr)
+
+
+def status_start(message: str):
+    """Print start status (→) to stderr."""
+    print(f"→ {message}", file=sys.stderr, flush=True)
+
+
+def status_done(message: str):
+    """Print completion status (✓) to stderr."""
+    print(f"✓ {message}", file=sys.stderr, flush=True)
+
+
+def status_async(message: str):
+    """Print async/LLM operation status (⟳) to stderr."""
+    print(f"⟳ {message}", file=sys.stderr, flush=True)

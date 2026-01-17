@@ -69,7 +69,10 @@ from gmail_common import (
     parse_message,
     format_error,
     format_success,
-    log_verbose
+    log_verbose,
+    status_start,
+    status_done,
+    status_async
 )
 
 # Import RLM helper functions
@@ -175,7 +178,8 @@ def llm_query(
     timeout: int = 120,
     use_rlm_framing: bool = None,
     model: str = None,
-    json_output: bool = False
+    json_output: bool = False,
+    _skip_status: bool = False
 ) -> str:
     """
     Invoke Claude recursively via Anthropic SDK.
@@ -239,6 +243,8 @@ def llm_query(
             request_params["response_format"] = {"type": "json_object"}
 
         # Make API call with timeout
+        if not _skip_status:
+            status_async("Querying LLM...")
         response = client.messages.create(
             **request_params,
             timeout=float(timeout)
@@ -250,6 +256,8 @@ def llm_query(
             response.usage.output_tokens
         )
 
+        if not _skip_status:
+            status_done("LLM query complete")
         return response.content[0].text
 
     except Exception as e:
@@ -268,7 +276,8 @@ def parallel_llm_query(
     timeout: int = 120,
     use_rlm_framing: bool = None,
     model: str = None,
-    json_output: bool = False
+    json_output: bool = False,
+    _skip_status: bool = False
 ) -> list[str]:
     """
     Execute multiple LLM queries in parallel.
@@ -285,10 +294,13 @@ def parallel_llm_query(
     Returns:
         List of results in same order as prompts
     """
+    if not _skip_status:
+        status_async(f"Running {len(prompts)} parallel LLM queries...")
     results = [None] * len(prompts)
 
     def execute_query(index, prompt, context):
-        return index, llm_query(prompt, context, timeout, use_rlm_framing, model, json_output)
+        # Note: Individual queries don't print status to avoid noise
+        return index, llm_query(prompt, context, timeout, use_rlm_framing, model, json_output, _skip_status=True)
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
@@ -300,6 +312,8 @@ def parallel_llm_query(
             idx, result = future.result()
             results[idx] = result
 
+    if not _skip_status:
+        status_done(f"Completed {len(prompts)} queries")
     return results
 
 
@@ -336,8 +350,11 @@ def parallel_map(
             max_workers=5
         )
     """
+    status_async(f"Processing {len(chunks)} chunks...")
     prompts = [(func_prompt, context_fn(chunk)) for chunk in chunks]
-    return parallel_llm_query(prompts, max_workers=max_workers, use_rlm_framing=use_rlm_framing, model=model, json_output=json_output)
+    results = parallel_llm_query(prompts, max_workers=max_workers, use_rlm_framing=use_rlm_framing, model=model, json_output=json_output, _skip_status=True)
+    status_done(f"Processed {len(chunks)} chunks")
+    return results
 
 
 def FINAL(result: str):
@@ -410,6 +427,8 @@ def fetch_emails_for_repl(
     """
     service = get_gmail_service(SCOPES)
 
+    status_start("Fetching emails...")
+
     all_message_ids = []
     page_token = None
     page_num = 0
@@ -420,7 +439,7 @@ def fetch_emails_for_repl(
         remaining = max_results - len(all_message_ids)
         page_size = min(100, remaining)
 
-        print(f"[REPL] Fetching page {page_num}...", file=sys.stderr)
+        log_verbose(f"Fetching page {page_num}...", verbose)
 
         request_params = {
             'userId': 'me',
@@ -443,9 +462,10 @@ def fetch_emails_for_repl(
             break
 
     total_found = len(all_message_ids)
-    print(f"[REPL] Found {total_found} messages", file=sys.stderr)
+    log_verbose(f"Found {total_found} messages", verbose)
 
     if not all_message_ids:
+        status_done("Found 0 emails")
         return [], {"query": query, "count": 0, "format": format_type}
 
     # Phase 2: Fetch message details
@@ -453,7 +473,7 @@ def fetch_emails_for_repl(
 
     for i, msg in enumerate(all_message_ids):
         if (i + 1) % 50 == 0:
-            print(f"[REPL] Fetching details {i + 1}/{total_found}...", file=sys.stderr)
+            log_verbose(f"Fetching details {i + 1}/{total_found}...", verbose)
 
         if format_type == "minimal":
             api_format = "minimal"
@@ -471,7 +491,7 @@ def fetch_emails_for_repl(
         parsed = parse_message(full_msg, format_type)
         detailed_messages.append(parsed)
 
-    print(f"[REPL] Loaded {total_found} emails into environment", file=sys.stderr)
+    status_done(f"Loaded {total_found} emails")
 
     metadata = {
         "query": query,
@@ -510,7 +530,7 @@ def load_emails_from_file(filepath: str) -> tuple[list[dict], dict]:
         "source_file": filepath
     }
 
-    print(f"[REPL] Loaded {len(emails)} emails from {filepath}", file=sys.stderr)
+    status_done(f"Loaded {len(emails)} emails")
 
     return emails, metadata
 
@@ -602,8 +622,9 @@ def execute_rlm_code(
     _exec_globals = exec_env
 
     try:
+        status_start("Executing code...")
         if verbose:
-            print(f"[REPL] Executing code:\n{code[:200]}...", file=sys.stderr)
+            log_verbose(f"Code:\n{code[:200]}...", verbose)
 
         # Execute the code
         exec(code, exec_env)
@@ -764,7 +785,6 @@ Example:
             emails, metadata = load_emails_from_file(args.load_file)
 
         # Execute code
-        print(f"[REPL] Executing RLM code...", file=sys.stderr)
         result = execute_rlm_code(code, emails, metadata, args.verbose)
 
         # Output result

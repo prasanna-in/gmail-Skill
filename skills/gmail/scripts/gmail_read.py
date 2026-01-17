@@ -35,7 +35,9 @@ from gmail_common import (
     parse_message,
     format_error,
     format_success,
-    log_verbose
+    log_verbose,
+    status_start,
+    status_done
 )
 
 
@@ -74,6 +76,7 @@ def search_messages(
     try:
         # Search for messages matching query
         # This returns a list of message IDs and threadIds
+        status_start("Searching emails...")
         log_verbose("Executing search query...", verbose)
 
         results = service.users().messages().list(
@@ -85,6 +88,7 @@ def search_messages(
         messages = results.get('messages', [])
         result_count = len(messages)
 
+        status_done(f"Found {result_count} emails")
         log_verbose(f"Found {result_count} messages", verbose)
 
         if not messages:
