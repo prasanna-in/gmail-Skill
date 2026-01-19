@@ -814,6 +814,48 @@ def detect_suspicious_senders(
         'facebook.com', 'paypal.com', 'netflix.com', 'linkedin.com'
     }
 
+    # Legitimate subdomain patterns (brand.com → *.brand.com is OK)
+    # These are known legitimate marketing/service subdomains
+    legitimate_subdomain_patterns = {
+        'linkedin.com': ['em.linkedin.com', 'e.linkedin.com', 'news.linkedin.com'],
+        'google.com': ['mail.google.com', 'accounts.google.com', 'noreply.google.com'],
+        'microsoft.com': ['account.microsoft.com', 'no-reply.microsoft.com'],
+        'amazon.com': ['amazon.com', 'marketplace.amazon.com', 'payments.amazon.com'],
+        'paypal.com': ['paypal.com', 'service.paypal.com', 'notification.paypal.com'],
+        'apple.com': ['appleid.apple.com', 'no-reply.apple.com'],
+        'facebook.com': ['facebookmail.com', 'notification.facebook.com'],
+        'netflix.com': ['info.netflix.com', 'account.netflix.com']
+    }
+
+    # Brand-to-domain mapping for display name validation
+    # Maps brand names/keywords to their legitimate domains
+    brand_domain_mapping = {
+        # Global brands
+        'google': ['google.com', 'gmail.com'],
+        'microsoft': ['microsoft.com', 'outlook.com', 'live.com'],
+        'apple': ['apple.com', 'icloud.com'],
+        'amazon': ['amazon.com', 'aws.com'],
+        'paypal': ['paypal.com'],
+        'netflix': ['netflix.com'],
+        'linkedin': ['linkedin.com'],
+        'facebook': ['facebook.com', 'facebookmail.com'],
+        # Banking (add regional banks)
+        'dbs': ['dbs.com', 'dbs.com.sg'],
+        'dbs bank': ['dbs.com', 'dbs.com.sg'],
+        'gxs': ['gxs.com.sg'],
+        'gxs bank': ['gxs.com.sg'],
+        'citibank': ['citi.com', 'citibank.com'],
+        'hsbc': ['hsbc.com', 'hsbc.com.sg'],
+        'standard chartered': ['sc.com', 'standardchartered.com'],
+        'ocbc': ['ocbc.com', 'ocbc.com.sg'],
+        'uob': ['uob.com.sg'],
+        # Cloud providers
+        'aws': ['amazon.com', 'aws.com', 'amazonaws.com'],
+        'amazon web services': ['amazon.com', 'aws.com', 'amazonaws.com'],
+        'azure': ['microsoft.com', 'azure.com'],
+        'salesforce': ['salesforce.com']
+    }
+
     for email in emails:
         from_field = email.get('from', '')
 
@@ -831,30 +873,71 @@ def detect_suspicious_senders(
 
         sender_domain = sender_email.split('@')[1]
 
-        # Check 1: Domain squatting
+        # Check 1: Domain squatting (improved with subdomain handling)
+        is_legitimate_subdomain = False
         for legit_domain in common_domains:
-            # Levenshtein-like check (simple version)
-            if sender_domain != legit_domain and _domain_similarity(sender_domain, legit_domain) > 0.7:
-                suspicious.append({
-                    "sender": sender_email,
-                    "reason": f"Possible domain squatting of {legit_domain}",
-                    "confidence": 0.9,
-                    "email_id": email.get('id', ''),
-                    "auth_failed": False
-                })
+            # Check if it's a known legitimate subdomain
+            if legit_domain in legitimate_subdomain_patterns:
+                if sender_domain in legitimate_subdomain_patterns[legit_domain]:
+                    is_legitimate_subdomain = True
+                    break
+                # Also check if it's a direct subdomain (*.domain.com)
+                if sender_domain.endswith('.' + legit_domain):
+                    # Could be legitimate, skip for now (too many false positives)
+                    is_legitimate_subdomain = True
+                    break
 
-        # Check 2: Display name spoofing
-        if display_name:
-            # Look for corporate names in display but different domain
-            corporate_keywords = ['paypal', 'apple', 'microsoft', 'google', 'amazon', 'bank']
-            display_lower = display_name.lower()
-            if any(keyword in display_lower for keyword in corporate_keywords):
-                # Check if domain matches
-                if not any(keyword in sender_domain for keyword in corporate_keywords):
+            # Only flag if it's similar but NOT an exact match or legitimate subdomain
+            if not is_legitimate_subdomain and sender_domain != legit_domain:
+                similarity = _domain_similarity(sender_domain, legit_domain)
+                # Increased threshold to reduce false positives (0.7 → 0.85)
+                # Also check for suspicious character substitutions
+                if similarity > 0.85 or _has_suspicious_chars(sender_domain, legit_domain):
                     suspicious.append({
                         "sender": sender_email,
-                        "reason": "Display name spoofing (corporate name with unrelated domain)",
-                        "confidence": 0.85,
+                        "reason": f"Possible domain squatting of {legit_domain}",
+                        "confidence": 0.9,
+                        "email_id": email.get('id', ''),
+                        "auth_failed": False
+                    })
+                    break
+
+        # Check 2: Display name spoofing (improved with brand mapping)
+        if display_name and not is_legitimate_subdomain:
+            display_lower = display_name.lower()
+
+            # Check against brand-domain mapping
+            spoofing_detected = False
+            for brand, legitimate_domains in brand_domain_mapping.items():
+                if brand in display_lower:
+                    # Check if sender domain matches any legitimate domain for this brand
+                    domain_matches = False
+                    for legit_domain in legitimate_domains:
+                        if sender_domain == legit_domain or sender_domain.endswith('.' + legit_domain):
+                            domain_matches = True
+                            break
+
+                    # If brand in display but domain doesn't match, it's spoofing
+                    if not domain_matches:
+                        spoofing_detected = True
+                        suspicious.append({
+                            "sender": sender_email,
+                            "reason": f"Display name spoofing: '{brand}' in display name but domain is {sender_domain}",
+                            "confidence": 0.85,
+                            "email_id": email.get('id', ''),
+                            "auth_failed": False
+                        })
+                        break
+
+            # Legacy check for generic "bank" keyword (only if not already caught)
+            if not spoofing_detected and 'bank' in display_lower:
+                # Only flag if domain doesn't look bank-related
+                bank_domain_indicators = ['bank', 'hsbc', 'citi', 'dbs', 'ocbc', 'uob', 'gxs', 'chase', 'wells', 'bofa', 'sc.com', 'standardchartered']
+                if not any(indicator in sender_domain for indicator in bank_domain_indicators):
+                    suspicious.append({
+                        "sender": sender_email,
+                        "reason": "Generic bank reference in display name with non-bank domain",
+                        "confidence": 0.65,  # Lower confidence for generic check
                         "email_id": email.get('id', ''),
                         "auth_failed": False
                     })
@@ -900,6 +983,49 @@ def _domain_similarity(domain1: str, domain2: str) -> float:
     union = len(b1 | b2)
 
     return intersection / union if union > 0 else 0.0
+
+
+def _has_suspicious_chars(domain1: str, domain2: str) -> bool:
+    """
+    Check if domain1 appears to be typosquatting domain2 via character substitution.
+
+    Common substitutions:
+    - Numbers for letters: 0→o, 1→l/i, 3→e, 5→s
+    - Similar looking chars: rn→m, vv→w
+    - Homoglyphs: а→a (cyrillic)
+
+    Args:
+        domain1: Sender domain to check
+        domain2: Legitimate domain to compare against
+
+    Returns:
+        True if suspicious character substitutions detected
+    """
+    # Common character substitutions used in phishing
+    substitutions = {
+        '0': 'o',
+        '1': 'il',
+        '3': 'e',
+        '5': 's',
+        '8': 'b',
+    }
+
+    # Remove TLD for comparison
+    d1_base = domain1.rsplit('.', 1)[0] if '.' in domain1 else domain1
+    d2_base = domain2.rsplit('.', 1)[0] if '.' in domain2 else domain2
+
+    # Check if lengths are similar (within 2 chars)
+    if abs(len(d1_base) - len(d2_base)) > 2:
+        return False
+
+    # Try to map domain1 to domain2 by reversing substitutions
+    normalized = d1_base
+    for digit, letters in substitutions.items():
+        for letter in letters:
+            normalized = normalized.replace(digit, letter)
+
+    # If normalized version matches legitimate domain, it's suspicious
+    return normalized == d2_base
 
 
 # =============================================================================
