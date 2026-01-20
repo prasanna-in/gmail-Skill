@@ -1232,6 +1232,12 @@ Example:
     )
 
     parser.add_argument(
+        "--full-body",
+        action="store_true",
+        help="Extract full email bodies when using --source browser (slower, ~3s per email)"
+    )
+
+    parser.add_argument(
         "--max-results",
         type=int,
         default=200,
@@ -1373,6 +1379,13 @@ Example:
                 "message": "--query and --load-file cannot be used with --source browser"
             }), file=sys.stderr)
             sys.exit(1)
+
+        # Performance warning for full-body mode
+        if args.full_body and args.max_results > 100:
+            print("\n⚠️  WARNING: Full body extraction with large dataset", file=sys.stderr)
+            print(f"   Requested: {args.max_results} emails", file=sys.stderr)
+            print(f"   Expected time: ~{(args.max_results * 3) // 60} minutes", file=sys.stderr)
+            print("   Consider using snippet mode (remove --full-body) for faster extraction\n", file=sys.stderr)
     elif args.source == "gmail":
         if not args.query and not args.load_file:
             print(json.dumps({
@@ -1466,6 +1479,8 @@ Example:
                 cmd.append("--verbose")
             if args.browser_mock:
                 cmd.append("--mock")
+            if args.full_body:
+                cmd.append("--full-body")
 
             result = subprocess.run(cmd, capture_output=True, text=True)
 

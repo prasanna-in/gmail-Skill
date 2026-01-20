@@ -132,7 +132,7 @@ agent-browser open https://outlook.office365.com  # Outlook 365
 
 **Examples:**
 
-**Corporate Gmail:**
+**Corporate Gmail - Snippet Mode (Fast):**
 ```bash
 .venv/bin/python skills/gmail/scripts/gmail_rlm_repl.py \
   --source browser \
@@ -145,25 +145,53 @@ FINAL(f'Urgent: {len(result[\"urgent\"])}, Action: {len(result[\"action_required
 "
 ```
 
-**Outlook 365 Security Alerts:**
+**Corporate Gmail - Full Body for Security (Slow):**
 ```bash
 .venv/bin/python skills/gmail/scripts/gmail_rlm_repl.py \
   --source browser \
-  --webmail-url "https://outlook.office365.com" \
+  --webmail-url "https://mail.google.com/mail/u/0" \
   --webmail-folder "Security Alerts" \
-  --max-results 500 \
+  --max-results 100 \
+  --full-body \
   --code "
 result = security_triage(emails)
 FINAL(result['executive_summary'])
 "
 ```
 
+**Outlook 365 Security Alerts:**
+```bash
+.venv/bin/python skills/gmail/scripts/gmail_rlm_repl.py \
+  --source browser \
+  --webmail-url "https://outlook.office365.com" \
+  --webmail-folder "Security Alerts" \
+  --max-results 200 \
+  --full-body \
+  --code "
+result = security_triage(emails)
+FINAL(result['executive_summary'])
+"
+```
+
+**When to use --full-body:**
+- ✅ Security alert triage (IOC extraction)
+- ✅ Phishing analysis (URL/attachment lists)
+- ✅ Compliance audits (complete content)
+- ❌ Sender analysis (snippet sufficient)
+- ❌ Date filtering (snippet sufficient)
+- ❌ Quick inbox triage (snippet sufficient)
+
+**Performance:**
+- **Snippet mode (default):** ~90 sec for 500 emails
+- **Full body mode (--full-body):** ~25 min for 500 emails (~3s per email)
+
 **How it works:**
 1. Browser session persists after initial login
 2. `browser_email_fetch.py` uses agent-browser to navigate webmail
-3. Emails extracted with 93% less context (snapshot refs vs DOM)
-4. Data normalized to Gmail API schema
-5. Same RLM functions work identically
+3. **Snippet mode:** Extracts from inbox list (fast, body = snippet)
+4. **Full body mode:** Clicks each email individually (slow, complete body content)
+5. Data normalized to Gmail API schema
+6. Same RLM functions work identically
 
 ### Development
 

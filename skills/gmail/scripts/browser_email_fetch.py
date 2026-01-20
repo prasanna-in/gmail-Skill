@@ -109,7 +109,7 @@ def normalize_date(date_str: str) -> str:
         return date_str
 
 
-def extract_emails_via_browser(url: str, folder: str, max_results: int, session_name: str = "gmail_corporate", use_mock: bool = False) -> list[dict]:
+def extract_emails_via_browser(url: str, folder: str, max_results: int, session_name: str = "gmail_corporate", use_mock: bool = False, full_body: bool = False) -> list[dict]:
     """
     Use agent-browser to navigate webmail and extract emails.
 
@@ -119,6 +119,7 @@ def extract_emails_via_browser(url: str, folder: str, max_results: int, session_
         max_results: Maximum emails to extract
         session_name: Agent-browser session name (persists login)
         use_mock: If True, return mock data instead of real extraction
+        full_body: If True, extract full email bodies (slower)
 
     Returns:
         List of email dicts with keys: subject, from, to, date, body
@@ -156,7 +157,7 @@ def extract_emails_via_browser(url: str, folder: str, max_results: int, session_
         extractor.open_gmail(url)
 
         # Extract emails
-        emails = extractor.extract_emails(max_results=max_results)
+        emails = extractor.extract_emails(max_results=max_results, include_body=full_body)
 
         return emails
 
@@ -256,7 +257,7 @@ def normalize_to_gmail_schema(browser_emails: list[dict], url: str) -> list[dict
     return normalized
 
 
-def fetch_via_browser(url: str, folder: str, max_results: int, session_name: str = "gmail_corporate", use_mock: bool = False) -> dict:
+def fetch_via_browser(url: str, folder: str, max_results: int, session_name: str = "gmail_corporate", use_mock: bool = False, full_body: bool = False) -> dict:
     """
     Main fetch function: orchestrate browser extraction and normalization.
 
@@ -266,6 +267,7 @@ def fetch_via_browser(url: str, folder: str, max_results: int, session_name: str
         max_results: Max emails to fetch
         session_name: Browser session name (persists login)
         use_mock: If True, use mock data instead of real browser
+        full_body: If True, extract full email bodies (slower)
 
     Returns:
         Dictionary with status, messages, and metadata (Gmail API format)
@@ -297,9 +299,25 @@ def fetch_via_browser(url: str, folder: str, max_results: int, session_name: str
         )
         print(file=sys.stderr)
 
+    # Performance warning for full-body mode
+    if full_body and actual_max > 100:
+        print(
+            f"\nWARNING: Full body extraction for {actual_max} emails.",
+            file=sys.stderr
+        )
+        print(
+            f"Expected time: ~{(actual_max * 3) // 60} minutes ({actual_max * 3} seconds)",
+            file=sys.stderr
+        )
+        print(
+            f"Consider using snippet mode (default) for faster extraction.",
+            file=sys.stderr
+        )
+        print(file=sys.stderr)
+
     # Extract emails via browser (real or mock)
     browser_emails = extract_emails_via_browser(
-        url, folder, actual_max, session_name, use_mock
+        url, folder, actual_max, session_name, use_mock, full_body
     )
 
     # Normalize to Gmail schema
@@ -315,6 +333,7 @@ def fetch_via_browser(url: str, folder: str, max_results: int, session_name: str
             "webmail_url": url,
             "folder": folder,
             "format": "full",
+            "extraction_mode": "full_body" if full_body else "snippet",
             "timestamp": datetime.now().isoformat(),
             "session": session_name if not use_mock else "mock",
             "requested_count": max_results,
@@ -414,6 +433,12 @@ How It Works:
         help="Browser session name (persists login cookies, default: gmail_corporate)"
     )
 
+    parser.add_argument(
+        "--full-body",
+        action="store_true",
+        help="Extract full email bodies by clicking each email (slower, ~3s per email)"
+    )
+
     args = parser.parse_args()
 
     # Validate URL
@@ -443,7 +468,8 @@ How It Works:
             args.folder,
             args.max_results,
             args.session,
-            args.mock
+            args.mock,
+            args.full_body
         )
 
         # Write to output file

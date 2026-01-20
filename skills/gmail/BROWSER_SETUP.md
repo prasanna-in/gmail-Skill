@@ -103,13 +103,23 @@ To use mock data for testing:
 
 ## Extracted Data
 
-**From inbox list (fast):**
+**Snippet Mode (default - FAST):**
 - ✅ Subject
 - ✅ Sender (from email address)
 - ✅ Date
-- ✅ Body snippet (preview from inbox)
-- ⚠️ Full body (not extracted, use snippet)
+- ✅ Body snippet (~200 chars)
+- ⚠️ `body` field duplicates `snippet` (limitation)
 - ❌ Recipients (to/cc) - not visible in list view
+- **Speed:** ~30 seconds for 500 emails
+
+**Full Body Mode (--full-body - SLOW):**
+- ✅ Subject
+- ✅ Sender
+- ✅ To/CC (from opened email)
+- ✅ Date
+- ✅ **Full body content** (complete email text)
+- **Speed:** ~25 minutes for 500 emails (~3s per email)
+- **Use for:** Security analysis, IOC extraction, phishing detection
 
 **Schema:**
 ```json
@@ -118,14 +128,57 @@ To use mock data for testing:
   "threadId": "browser_thread_abc123",
   "subject": "Your email subject",
   "from": "sender@example.com",
-  "to": "",
+  "to": "recipient@example.com",
   "date": "2026-01-20T03:24:47.812Z",
   "snippet": "First ~200 chars of email body...",
-  "body": "Full snippet text (not full email body)"
+  "body": "Complete email body (if --full-body) or snippet (default)"
 }
 ```
 
-**Note:** To get full email bodies, you'd need to click each email individually, which is much slower. Current implementation prioritizes speed by extracting from the inbox list.
+**Performance Comparison:**
+
+| Emails | Snippet Mode | Full Body Mode |
+|--------|-------------|----------------|
+| 50     | ~15 sec     | ~3 min         |
+| 100    | ~30 sec     | ~5 min         |
+| 500    | ~90 sec     | ~25 min        |
+| 1,250  | ~3 min      | ~60 min        |
+
+**Examples:**
+
+```bash
+# Fast snippet mode (default)
+.venv/bin/python skills/gmail/scripts/browser_email_fetch.py \
+  --url "https://mail.google.com/mail/u/0" \
+  --max-results 500 \
+  --output /tmp/emails.json
+
+# Slow full body mode for security analysis
+.venv/bin/python skills/gmail/scripts/browser_email_fetch.py \
+  --url "https://mail.google.com/mail/u/0" \
+  --max-results 200 \
+  --full-body \
+  --output /tmp/emails_full.json
+
+# With RLM integration
+.venv/bin/python skills/gmail/scripts/gmail_rlm_repl.py \
+  --source browser \
+  --webmail-url "https://mail.google.com/mail/u/0" \
+  --max-results 200 \
+  --full-body \
+  --code "
+result = security_triage(emails)
+FINAL(result['executive_summary'])
+"
+```
+
+**When to use --full-body:**
+- ✅ Security alert triage (IOC extraction)
+- ✅ Phishing analysis (URL/attachment lists)
+- ✅ Compliance audits (complete content)
+- ❌ Sender analysis (snippet sufficient)
+- ❌ Date filtering (snippet sufficient)
+- ❌ Quick inbox triage (snippet sufficient)
 
 ## Troubleshooting
 
@@ -189,15 +242,16 @@ This runs the core extraction logic directly without the wrapper script.
 
 ## Comparison: Browser vs API
 
-| Feature | Gmail API | Browser Extraction |
-|---------|-----------|-------------------|
-| **Setup** | OAuth2 credentials, approval flow | One-time manual login |
-| **Auth** | API tokens | Browser cookies |
-| **MFA/SSO** | Complex (if supported) | Natural (login in browser) |
-| **Speed** | ~100ms per email | ~30 sec for 500 emails |
-| **Max emails** | 1000s (paginated) | 1,250 (25 pages) |
-| **Corporate restrictions** | Often blocked | Usually works |
-| **Maintenance** | Stable API | May break if Gmail UI changes |
+| Feature | Gmail API | Browser Snippet | Browser Full Body |
+|---------|-----------|-----------------|-------------------|
+| **Setup** | OAuth2 credentials | One-time login | One-time login |
+| **Auth** | API tokens | Browser cookies | Browser cookies |
+| **MFA/SSO** | Complex | Natural | Natural |
+| **Speed** | ~100ms per email | ~90 sec for 500 | ~25 min for 500 |
+| **Full body** | ✅ Yes | ❌ Snippet only | ✅ Yes |
+| **Max emails** | 1000s (paginated) | 1,250 (25 pages) | 1,250 (25 pages) |
+| **Corporate** | Often blocked | Usually works | Usually works |
+| **Maintenance** | Stable API | May break if UI changes | May break if UI changes |
 
 **Use browser when:**
 - Gmail API access blocked by IT
@@ -245,9 +299,9 @@ This runs the core extraction logic directly without the wrapper script.
 ## Known Limitations
 
 1. **Gmail only** - Outlook/Exchange support planned but not implemented
-2. **No full body** - Only snippets from inbox list (full body requires clicking each email)
+2. **Full body is slow** - Requires `--full-body` flag and ~3s per email (clicking each email)
 3. **Date extraction** - Currently shows current timestamp (needs DOM selector improvement)
-4. **No "to" field** - Not visible in Gmail's inbox list view
+4. **No "to" field in snippet mode** - Only available with `--full-body` flag
 5. **Speed** - Slower than API (but faster than manual review!)
 
 ## Contributing

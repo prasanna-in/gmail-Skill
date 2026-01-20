@@ -186,96 +186,127 @@ class GmailBrowserExtractor:
         Returns:
             Email dict with subject, from, to, date, body, or None if failed
         """
-        try:
-            print(f"  Extracting email {row_index + 1}...")
-
-            # Click the email row using JavaScript (more reliable than CSS selector)
-            click_js = f"""
-            (() => {{
-                const rows = Array.from(document.querySelectorAll('tr.zA'))
-                    .filter(row => row.querySelector('td') !== null);
-                if (rows[{row_index}]) {{
-                    rows[{row_index}].click();
-                    return true;
-                }}
-                return false;
-            }})()
-            """
-
-            click_result = self._run_command("eval", click_js, expect_json=True)
-            if not click_result.get("result"):
-                print(f"  Could not find row {row_index}")
-                return None
-
-            # Wait for email to open
-            time.sleep(3)
-
-            # Extract email data using JavaScript
-            js_extract = """
-            (() => {
-                // Find subject - Gmail uses h2 for subject in opened email
-                const subject = document.querySelector('h2')?.textContent ||
-                               document.querySelector('.hP')?.textContent ||
-                               '(No subject)';
-
-                // Find sender - look for email attribute on sender elements
-                const senderElem = document.querySelector('.gD[email]') ||
-                                  document.querySelector('.go[email]') ||
-                                  document.querySelector('[email]');
-                const from = senderElem?.getAttribute('email') ||
-                            senderElem?.textContent ||
-                            '(Unknown sender)';
-
-                // Find date - Gmail shows date in various places
-                const dateElem = document.querySelector('.g3')?.getAttribute('title') ||
-                                document.querySelector('[data-tooltip]')?.getAttribute('data-tooltip') ||
-                                document.querySelector('.g3')?.textContent ||
-                                new Date().toISOString();
-
-                // Find email body - Gmail uses div.ii for message body
-                const bodyElem = document.querySelector('.ii') ||
-                                document.querySelector('.a3s');
-                const body = bodyElem?.textContent ||
-                            '(Body not available)';
-
-                // Find recipients - to field
-                const toElems = document.querySelectorAll('.g2[email]');
-                const to = Array.from(toElems)
-                    .map(el => el.getAttribute('email'))
-                    .filter(Boolean)
-                    .join(', ') || '';
-
-                return {
-                    subject: subject.trim(),
-                    from: from.trim(),
-                    to: to.trim(),
-                    date: dateElem,
-                    body: body.trim().substring(0, 10000) // Limit body size
-                };
-            })()
-            """
-
-            result = self._run_command("eval", js_extract, expect_json=True)
-            email_data = result.get("result", {})
-
-            if not email_data or not email_data.get("subject"):
-                print(f"  Warning: Could not extract full email data")
-
-            # Go back to email list
-            self._run_command("back")
-            time.sleep(2)
-
-            return email_data
-
-        except Exception as e:
-            print(f"  Failed to extract email {row_index + 1}: {e}")
-            # Try to go back anyway
+        max_retries = 2
+        for attempt in range(max_retries):
             try:
+                if attempt == 0:
+                    print(f"  Extracting email {row_index + 1}...")
+                else:
+                    print(f"  Email {row_index + 1}: Retry {attempt}/{max_retries - 1}")
+
+                # Click the email row using JavaScript (more reliable than CSS selector)
+                click_js = f"""
+                (() => {{
+                    const rows = Array.from(document.querySelectorAll('tr.zA'))
+                        .filter(row => row.querySelector('td') !== null);
+                    if (rows[{row_index}]) {{
+                        rows[{row_index}].click();
+                        return true;
+                    }}
+                    return false;
+                }})()
+                """
+
+                click_result = self._run_command("eval", click_js, expect_json=True)
+                if not click_result.get("result"):
+                    if attempt < max_retries - 1:
+                        time.sleep(2)
+                        continue
+                    else:
+                        print(f"  Email {row_index + 1}: Could not find row after {max_retries} attempts")
+                        return None
+
+                # Wait for email to open
+                time.sleep(3)
+
+                # Extract email data using JavaScript
+                js_extract = """
+                (() => {
+                    // Find subject - Gmail uses h2 for subject in opened email
+                    const subject = document.querySelector('h2')?.textContent ||
+                                   document.querySelector('.hP')?.textContent ||
+                                   '(No subject)';
+
+                    // Find sender - look for email attribute on sender elements
+                    const senderElem = document.querySelector('.gD[email]') ||
+                                      document.querySelector('.go[email]') ||
+                                      document.querySelector('[email]');
+                    const from = senderElem?.getAttribute('email') ||
+                                senderElem?.textContent ||
+                                '(Unknown sender)';
+
+                    // Find date - Gmail shows date in various places
+                    const dateElem = document.querySelector('.g3')?.getAttribute('title') ||
+                                    document.querySelector('[data-tooltip]')?.getAttribute('data-tooltip') ||
+                                    document.querySelector('.g3')?.textContent ||
+                                    new Date().toISOString();
+
+                    // Find email body - Gmail uses div.ii for message body
+                    const bodyElem = document.querySelector('.ii') ||
+                                    document.querySelector('.a3s');
+                    const body = bodyElem?.textContent ||
+                                '(Body not available)';
+
+                    // Find recipients - to field
+                    const toElems = document.querySelectorAll('.g2[email]');
+                    const to = Array.from(toElems)
+                        .map(el => el.getAttribute('email'))
+                        .filter(Boolean)
+                        .join(', ') || '';
+
+                    return {
+                        subject: subject.trim(),
+                        from: from.trim(),
+                        to: to.trim(),
+                        date: dateElem,
+                        body: body.trim().substring(0, 10000) // Limit body size
+                    };
+                })()
+                """
+
+                result = self._run_command("eval", js_extract, expect_json=True)
+                email_data = result.get("result", {})
+
+                if not email_data or not email_data.get("subject"):
+                    if attempt < max_retries - 1:
+                        print(f"  Email {row_index + 1}: Empty data, retrying...")
+                        time.sleep(2)
+                        try:
+                            self._run_command("back")
+                        except:
+                            pass
+                        continue
+                    else:
+                        print(f"  Email {row_index + 1}: Failed after {max_retries} attempts")
+                        try:
+                            self._run_command("back")
+                        except:
+                            pass
+                        return None
+
+                # Go back to email list
                 self._run_command("back")
-                time.sleep(1)
-            except:
-                pass
-            return None
+                time.sleep(2)
+
+                return email_data
+
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    print(f"  Email {row_index + 1}: Error, retrying: {e}")
+                    try:
+                        self._run_command("back")
+                    except:
+                        pass
+                    time.sleep(2)
+                else:
+                    print(f"  Email {row_index + 1}: Failed after {max_retries} attempts: {e}")
+                    try:
+                        self._run_command("back")
+                    except:
+                        pass
+                    return None
+
+        return None
 
     def _click_older_button(self) -> bool:
         """
@@ -502,6 +533,84 @@ class GmailBrowserExtractor:
         print(f"Pagination complete: {len(accumulated_emails)} emails across {current_page} pages")
         return len(accumulated_emails), accumulated_emails
 
+    def extract_emails_with_pagination_full_body(
+        self,
+        max_results: int,
+        max_pages: int = 20
+    ) -> list[dict]:
+        """
+        Extract full email bodies with pagination.
+
+        Clicks through pages and extracts each email individually.
+        Much slower than snippet pagination (~3s per email).
+
+        Args:
+            max_results: Maximum number of emails to extract
+            max_pages: Maximum number of pages to navigate
+
+        Returns:
+            List of email dicts with full body content
+        """
+        print(f"\nExtracting up to {max_results} emails with full bodies across {max_pages} pages...")
+        print(f"Expected time: ~{(max_results * 3) // 60} minutes\n")
+
+        accumulated_emails = []
+        current_page = 1
+        start_time = time.time()
+
+        while len(accumulated_emails) < max_results and current_page <= max_pages:
+            print(f"\n--- Page {current_page} ---")
+
+            # Count emails on page
+            js_count = """
+            (() => {
+                const rows = Array.from(document.querySelectorAll('tr.zA'))
+                    .filter(row => row.querySelector('td') !== null);
+                return rows.length;
+            })()
+            """
+            result = self._run_command("eval", js_count, expect_json=True)
+            page_count = result.get("result", 0)
+
+            if page_count == 0:
+                print(f"  No emails found on page {current_page}, stopping")
+                break
+
+            # Extract emails on this page
+            emails_to_extract = min(page_count, max_results - len(accumulated_emails))
+            print(f"  Extracting {emails_to_extract} emails from page {current_page}")
+
+            for idx in range(emails_to_extract):
+                email_data = self.extract_email_from_row(idx)
+                if email_data:
+                    accumulated_emails.append(email_data)
+
+                # Progress
+                if len(accumulated_emails) % 10 == 0 and len(accumulated_emails) > 0:
+                    elapsed = time.time() - start_time
+                    progress_pct = int((len(accumulated_emails) / max_results) * 100)
+                    avg_time = elapsed / len(accumulated_emails)
+                    remaining = (max_results - len(accumulated_emails)) * avg_time
+                    print(f"    Total: {len(accumulated_emails)}/{max_results} ({progress_pct}%) - "
+                          f"~{int(remaining // 60)}m {int(remaining % 60)}s remaining")
+
+            if len(accumulated_emails) >= max_results:
+                break
+
+            # Next page
+            print(f"  Clicking [Older] button to go to page {current_page + 1}...")
+            if not self._click_older_button():
+                print(f"  [Older] button not found, stopping")
+                break
+
+            time.sleep(3)
+            current_page += 1
+
+        elapsed = time.time() - start_time
+        print(f"\nExtraction complete: {len(accumulated_emails)} emails in "
+              f"{int(elapsed // 60)}m {int(elapsed % 60)}s")
+        return accumulated_emails
+
     def extract_emails_from_list(self, max_results: int = 10) -> list[dict]:
         """
         Extract email data directly from the inbox list (fast method).
@@ -559,19 +668,41 @@ class GmailBrowserExtractor:
         """
         if include_body:
             # Slow method: click each email to get full body
-            print(f"\nExtracting up to {max_results} emails (with full body)...")
+            if max_results <= 50:
+                # Single page with full bodies
+                print(f"\nExtracting {max_results} emails with full bodies...")
+                print(f"Expected time: ~{(max_results * 3) // 60} minutes\n")
 
-            # Get email row count
-            email_selectors = self.get_email_list_elements(max_results)
+                # Get email row count
+                email_selectors = self.get_email_list_elements(max_results)
 
-            emails = []
-            for idx in range(len(email_selectors)):
-                email_data = self.extract_email_from_row(idx)
-                if email_data:
-                    emails.append(email_data)
+                emails = []
+                start_time = time.time()
 
-            print(f"\nSuccessfully extracted {len(emails)} emails")
-            return emails
+                for idx in range(len(email_selectors)):
+                    # Progress indicator every 10 emails
+                    if idx % 10 == 0 and idx > 0:
+                        elapsed = time.time() - start_time
+                        progress_pct = int((idx / len(email_selectors)) * 100)
+                        avg_time = elapsed / idx
+                        remaining = (len(email_selectors) - idx) * avg_time
+                        print(f"  Progress: {idx}/{len(email_selectors)} ({progress_pct}%) - "
+                              f"~{int(remaining // 60)}m {int(remaining % 60)}s remaining")
+
+                    email_data = self.extract_email_from_row(idx)
+                    if email_data:
+                        emails.append(email_data)
+
+                elapsed = time.time() - start_time
+                print(f"\nExtracted {len(emails)} emails in {int(elapsed // 60)}m {int(elapsed % 60)}s")
+                return emails
+            else:
+                # Multi-page with full bodies
+                max_pages = min((max_results // 50) + 2, 25)
+                return self.extract_emails_with_pagination_full_body(
+                    max_results=max_results,
+                    max_pages=max_pages
+                )
         else:
             # Fast method: extract from list directly
             return self.extract_emails_from_list(max_results)
